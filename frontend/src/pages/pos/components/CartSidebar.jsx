@@ -1,0 +1,175 @@
+import { useState } from 'react';
+import { Trash2, Plus, Minus, CreditCard, Ticket, X, Check, Loader2 } from 'lucide-react';
+import { cn } from '../../../lib/utils';
+import api from '../../../lib/api';
+
+export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, onClear }) {
+    const [voucherCode, setVoucherCode] = useState('');
+    const [voucherLoading, setVoucherLoading] = useState(false);
+    const [voucher, setVoucher] = useState(null);
+    const [voucherError, setVoucherError] = useState('');
+
+    const subtotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+    const discount = voucher?.discount_amount || 0;
+    const taxableAmount = subtotal - discount;
+    const tax = Math.max(0, taxableAmount) * 0.11;
+    const total = Math.max(0, taxableAmount + tax);
+
+    const applyVoucher = async () => {
+        if (!voucherCode.trim()) return;
+        setVoucherLoading(true);
+        setVoucherError('');
+
+        try {
+            const { data } = await api.post('/vouchers/validate', {
+                code: voucherCode,
+                subtotal: subtotal
+            });
+            setVoucher(data.data);
+        } catch (err) {
+            setVoucherError(err.response?.data?.message || 'Invalid voucher');
+            setVoucher(null);
+        } finally {
+            setVoucherLoading(false);
+        }
+    };
+
+    const removeVoucher = () => {
+        setVoucher(null);
+        setVoucherCode('');
+        setVoucherError('');
+    };
+
+    return (
+        <div className="flex flex-col h-full bg-white border-l border-gray-200 shadow-xl">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+                <h2 className="font-bold text-gray-800 flex items-center">
+                    <CreditCard className="w-5 h-5 mr-2 text-primary" />
+                    Current Order
+                </h2>
+                <button
+                    onClick={onClear}
+                    className="text-xs text-red-500 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+                    disabled={cart.length === 0}
+                >
+                    Clear
+                </button>
+            </div>
+
+            {/* Cart Items */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {cart.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-2">
+                        <CreditCard className="w-12 h-12 opacity-20" />
+                        <p className="text-sm">Cart is empty</p>
+                    </div>
+                ) : (
+                    cart.map((item) => (
+                        <div key={item.id} className="flex justify-between items-start bg-gray-50 p-2 rounded-md">
+                            <div className="flex-1 min-w-0 pr-2">
+                                <p className="font-medium text-sm text-gray-900 truncate">{item.name}</p>
+                                <p className="text-xs text-gray-500">Rp {item.price.toLocaleString('id-ID')}</p>
+                            </div>
+
+                            <div className="flex items-center space-x-2">
+                                <div className="flex items-center border border-gray-300 rounded bg-white">
+                                    <button
+                                        onClick={() => onUpdateQty(item.id, -1)}
+                                        className="p-1 hover:bg-gray-100 text-gray-600"
+                                    >
+                                        <Minus className="w-3 h-3" />
+                                    </button>
+                                    <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
+                                    <button
+                                        onClick={() => onUpdateQty(item.id, 1)}
+                                        className="p-1 hover:bg-gray-100 text-gray-600"
+                                    >
+                                        <Plus className="w-3 h-3" />
+                                    </button>
+                                </div>
+                                <button
+                                    onClick={() => onRemove(item.id)}
+                                    className="p-1.5 text-red-500 hover:bg-red-50 rounded"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+                    ))
+                )}
+            </div>
+
+            {/* Voucher Section */}
+            <div className="px-4 py-3 border-t border-gray-100">
+                {voucher ? (
+                    <div className="flex items-center justify-between bg-green-50 p-2 rounded-lg">
+                        <div className="flex items-center">
+                            <Ticket className="w-4 h-4 text-green-600 mr-2" />
+                            <div>
+                                <p className="text-sm font-medium text-green-800">{voucher.code}</p>
+                                <p className="text-xs text-green-600">-Rp {discount.toLocaleString('id-ID')}</p>
+                            </div>
+                        </div>
+                        <button onClick={removeVoucher} className="p-1 hover:bg-green-100 rounded">
+                            <X className="w-4 h-4 text-green-700" />
+                        </button>
+                    </div>
+                ) : (
+                    <div>
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                placeholder="Voucher code"
+                                className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-primary focus:border-primary"
+                                value={voucherCode}
+                                onChange={(e) => setVoucherCode(e.target.value.toUpperCase())}
+                                onKeyDown={(e) => e.key === 'Enter' && applyVoucher()}
+                            />
+                            <button
+                                onClick={applyVoucher}
+                                disabled={voucherLoading || !voucherCode.trim()}
+                                className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium disabled:opacity-50"
+                            >
+                                {voucherLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Apply'}
+                            </button>
+                        </div>
+                        {voucherError && <p className="text-xs text-red-500 mt-1">{voucherError}</p>}
+                    </div>
+                )}
+            </div>
+
+            {/* Summary Section */}
+            <div className="border-t border-gray-200 p-4 bg-gray-50">
+                <div className="space-y-2 mb-4">
+                    <div className="flex justify-between text-sm">
+                        <span className="text-gray-500">Subtotal</span>
+                        <span>Rp {subtotal.toLocaleString('id-ID')}</span>
+                    </div>
+                    {discount > 0 && (
+                        <div className="flex justify-between text-sm text-green-600">
+                            <span>Discount</span>
+                            <span>-Rp {discount.toLocaleString('id-ID')}</span>
+                        </div>
+                    )}
+                    <div className="flex justify-between text-sm">
+                        <span className="text-gray-500">Tax (11%)</span>
+                        <span>Rp {Math.round(tax).toLocaleString('id-ID')}</span>
+                    </div>
+                    <div className="flex justify-between text-base font-bold text-gray-900 pt-2 border-t border-gray-200">
+                        <span>Total</span>
+                        <span>Rp {Math.round(total).toLocaleString('id-ID')}</span>
+                    </div>
+                </div>
+
+                <button
+                    onClick={() => onCheckout({ subtotal, discount, tax: Math.round(tax), total: Math.round(total), voucher })}
+                    disabled={cart.length === 0}
+                    className="w-full bg-primary text-white py-3 rounded-lg font-bold shadow-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
+                >
+                    Charge Rp {Math.round(total).toLocaleString('id-ID')}
+                </button>
+            </div>
+        </div>
+    );
+}

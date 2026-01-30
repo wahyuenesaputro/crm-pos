@@ -1,0 +1,464 @@
+openapi: 3.0.3
+info:
+  title: CRM+POS API
+  description: RESTful API for SaaS CRM and Point of Sale System
+  version: 1.0.0
+  contact:
+    name: API Support
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local Development
+  - url: https://api.example.com/v1
+    description: Production
+
+tags:
+  - name: Auth
+    description: Authentication & Authorization
+  - name: Stores
+    description: Store & Branch Management
+  - name: Users
+    description: User Management
+  - name: Products
+    description: Product & Inventory
+  - name: Sales
+    description: POS Transactions
+  - name: Customers
+    description: CRM & Loyalty
+  - name: Vouchers
+    description: Promotions & Vouchers
+  - name: Reports
+    description: Analytics & Reporting
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        status: { type: integer }
+        error: { type: string }
+        message: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in: { type: integer }
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        email: { type: string }
+        full_name: { type: string }
+        roles: { type: array, items: { type: string } }
+        branch_id: { type: integer, nullable: true }
+
+    Product:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        sku: { type: string }
+        category_id: { type: integer }
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVariant'
+
+    ProductVariant:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        sku: { type: string }
+        selling_price: { type: number }
+        stock_qty: { type: integer }
+
+    SaleRequest:
+      type: object
+      required: [items, payments]
+      properties:
+        customer_id: { type: integer, nullable: true }
+        items:
+          type: array
+          items:
+            type: object
+            required: [variant_id, quantity]
+            properties:
+              variant_id: { type: integer }
+              quantity: { type: integer }
+              discount: { type: number }
+        discount_type: { type: string, enum: [none, percentage, fixed, voucher] }
+        discount_value: { type: number }
+        voucher_code: { type: string }
+        payments:
+          type: array
+          items:
+            type: object
+            required: [method, amount]
+            properties:
+              method: { type: string, enum: [cash, card, ewallet, qris] }
+              amount: { type: number }
+              reference: { type: string }
+        notes: { type: string }
+
+    Sale:
+      type: object
+      properties:
+        id: { type: integer }
+        invoice_number: { type: string }
+        transaction_date: { type: string, format: date-time }
+        subtotal: { type: number }
+        discount_amount: { type: number }
+        tax_amount: { type: number }
+        total_amount: { type: number }
+        status: { type: string }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleItem'
+        payments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+
+    SaleItem:
+      type: object
+      properties:
+        id: { type: integer }
+        product_name: { type: string }
+        quantity: { type: integer }
+        unit_price: { type: number }
+        subtotal: { type: number }
+
+    Payment:
+      type: object
+      properties:
+        id: { type: integer }
+        payment_method: { type: string }
+        amount: { type: number }
+        status: { type: string }
+
+    Customer:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        total_points: { type: integer }
+        tier: { type: string }
+
+    DailySalesReport:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        total_transactions: { type: integer }
+        total_revenue: { type: number }
+        total_discount: { type: number }
+        net_revenue: { type: number }
+        payment_breakdown:
+          type: object
+          additionalProperties: { type: number }
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: User login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Successful login
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: New tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      security: [{ bearerAuth: [] }]
+      summary: Logout and revoke tokens
+      responses:
+        '200':
+          description: Successfully logged out
+
+  /products:
+    get:
+      tags: [Products]
+      security: [{ bearerAuth: [] }]
+      summary: List products
+      parameters:
+        - name: category_id
+          in: query
+          schema: { type: integer }
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: Product list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+                  meta:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      page: { type: integer }
+                      limit: { type: integer }
+
+    post:
+      tags: [Products]
+      security: [{ bearerAuth: [] }]
+      summary: Create product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Product'
+      responses:
+        '201':
+          description: Product created
+
+  /products/{id}:
+    get:
+      tags: [Products]
+      security: [{ bearerAuth: [] }]
+      summary: Get product details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Product details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+
+  /sales:
+    get:
+      tags: [Sales]
+      security: [{ bearerAuth: [] }]
+      summary: List sales
+      parameters:
+        - name: date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: date_to
+          in: query
+          schema: { type: string, format: date }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sales list
+
+    post:
+      tags: [Sales]
+      security: [{ bearerAuth: [] }]
+      summary: Create sale transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaleRequest'
+      responses:
+        '201':
+          description: Sale created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+
+  /sales/{id}:
+    get:
+      tags: [Sales]
+      security: [{ bearerAuth: [] }]
+      summary: Get sale details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Sale details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+
+  /sales/{id}/receipt:
+    get:
+      tags: [Sales]
+      security: [{ bearerAuth: [] }]
+      summary: Get receipt (thermal/PDF)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: format
+          in: query
+          schema: { type: string, enum: [thermal, pdf], default: thermal }
+      responses:
+        '200':
+          description: Receipt content
+
+  /sales/{id}/refund:
+    post:
+      tags: [Sales]
+      security: [{ bearerAuth: [] }]
+      summary: Process refund
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      sale_item_id: { type: integer }
+                      quantity: { type: integer }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Refund processed
+
+  /customers:
+    get:
+      tags: [Customers]
+      security: [{ bearerAuth: [] }]
+      summary: List customers
+      responses:
+        '200':
+          description: Customer list
+
+    post:
+      tags: [Customers]
+      security: [{ bearerAuth: [] }]
+      summary: Create customer
+      responses:
+        '201':
+          description: Customer created
+
+  /vouchers/validate:
+    post:
+      tags: [Vouchers]
+      security: [{ bearerAuth: [] }]
+      summary: Validate voucher code
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+                subtotal: { type: number }
+                customer_id: { type: integer }
+      responses:
+        '200':
+          description: Voucher validation result
+
+  /reports/daily-sales:
+    get:
+      tags: [Reports]
+      security: [{ bearerAuth: [] }]
+      summary: Daily sales report
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: branch_id
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Daily sales summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySalesReport'
+
+  /reports/inventory:
+    get:
+      tags: [Reports]
+      security: [{ bearerAuth: [] }]
+      summary: Inventory valuation report
+      responses:
+        '200':
+          description: Inventory report

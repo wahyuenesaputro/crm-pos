@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- BAGIAN 1: VARIABEL & RESET DASAR --- */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    /* Tambahkan variabel lain jika perlu, tapi yang ini cukup */
+  }
+ 
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+  }
+
+  * {
+    @apply border-gray-200 dark:border-gray-700;
+  }
+  
+  body {
+    @apply bg-gray-50 text-gray-900 transition-colors duration-200;
+  }
+}
+
+/* --- BAGIAN 2: PAKSA DARK MODE (Di luar @layer biar aman) --- */
+
+/* 1. Paksa Body jadi Hitam Pekat saat Dark Mode */
+.dark body {
+  background-color: #111827 !important; /* gray-900 */
+  color: #f3f4f6 !important;
+}
+
+/* 2. Sulap Sidebar & Card (bg-white) jadi Gelap */
+.dark .bg-white {
+  background-color: #1f2937 !important; /* gray-800 */
+  color: #f3f4f6 !important;
+  border-color: #374151 !important;
+}
+
+/* 3. Sulap Background Utama (bg-gray-50) jadi Hitam */
+.dark .bg-gray-50,
+.dark .bg-gray-100 {
+  background-color: #030712 !important; /* gray-950 (Hitam Pekat) */
+  color: #f3f4f6 !important;
+}
+
+/* 4. Paksa Teks Gelap jadi Putih */
+.dark .text-gray-900,
+.dark .text-gray-800,
+.dark .text-gray-700,
+.dark .text-gray-600,
+.dark .text-gray-500 {
+  color: #e5e7eb !important; /* gray-200 */
+}
+
+/* 5. Paksa Input Form */
+.dark input, 
+.dark select, 
+.dark textarea {
+  background-color: #374151 !important;
+  color: white !important;
+  border-color: #4b5563 !important;
+}
+
+/* 6. Paksa Baris Tabel saat Hover */
+.dark tr:hover {
+  background-color: #374151 !important;
+}
