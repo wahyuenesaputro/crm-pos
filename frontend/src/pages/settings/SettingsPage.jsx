@@ -84,7 +84,7 @@ export default function SettingsPage() {
         setSaveMessage('');
         try {
             localStorage.setItem('storeSettings', JSON.stringify(storeSettings));
-            // await api.put('/settings/store', storeSettings); // Uncomment jika API store sudah ada
+            // await api.put('/settings/store', storeSettings);
             setSaveMessage('Settings saved successfully!');
             setTimeout(() => setSaveMessage(''), 3000);
         } catch (err) {
@@ -308,7 +308,7 @@ export default function SettingsPage() {
                 </div>
             </div>
 
-            {/* Modal Ganti Password */}
+            {}
             {isPasswordModalOpen && (
                 <ChangePasswordModal 
                     onClose={() => setIsPasswordModalOpen(false)} 
@@ -344,11 +344,9 @@ function ChangePasswordModal({ onClose }) {
 
         setLoading(true);
         try {
-            // Sesuai dengan route di AuthController kamu
             await api.post('/auth/change-password', formData);
             setMessage({ type: 'success', text: 'Password changed successfully!' });
             
-            // Reset form dan tutup modal setelah sukses
             setTimeout(() => {
                 onClose();
             }, 1500);
