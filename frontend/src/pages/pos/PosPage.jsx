@@ -138,6 +138,7 @@ export default function PosPage() {
                     onRemove={removeFromCart}
                     onCheckout={handleCheckout}
                     onClear={clearCart}
+                    onAddToCart={addToCart}
                 />
             </div>
 

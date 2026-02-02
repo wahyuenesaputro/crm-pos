@@ -71,6 +71,7 @@ class SaleController extends BaseApiController
     {
         $data = $this->request->getJSON(true);
 
+
         if (empty($data['items']) || !is_array($data['items'])) {
             return $this->error('Items are required', 422);
         }
@@ -83,7 +84,15 @@ class SaleController extends BaseApiController
             $branchId = $data['branch_id'] ?? null;
         }
         if (empty($branchId)) {
-            return $this->error('Branch context is required for this transaction. Please select a branch or ensure you are assigned to one.', 422);
+            return $this->error('Branch context is required.', 422);
+        }
+
+        // Validate points_amount if provided
+        $usePoints = !empty($data['use_points']);
+        $requestedPoints = isset($data['points_amount']) ? (int) $data['points_amount'] : null;
+
+        if ($requestedPoints !== null && $requestedPoints < 0) {
+            return $this->error('points_amount must be a non-negative integer', 422);
         }
 
         $db = \Config\Database::connect();
@@ -97,57 +106,122 @@ class SaleController extends BaseApiController
                 $idOrSku = $item['variant_id'];
                 $variant = $this->variantModel->find($idOrSku);
 
-    if (!$variant) {
-        $variant = $this->variantModel->where('sku', $idOrSku)->first(); 
-    }
+                if (!$variant) {
+                    $variant = $this->variantModel->where('sku', $idOrSku)->first();
+                }
 
-    if (!$variant) {
-        throw new \Exception("Product variant {$idOrSku} not found");
-    }
+                if (!$variant) {
+                    throw new \Exception("Product variant {$idOrSku} not found");
+                }
 
                 $quantity = (int) $item['quantity'];
-                $unitPrice = $variant->selling_price;
-                $discount = $item['discount'] ?? 0;
-                $itemSubtotal = ($unitPrice * $quantity) - $discount;
+                $unitPrice = (float) $variant->selling_price;
+                $itemDiscount = (float) ($item['discount'] ?? 0);
+                $itemSubtotal = ($unitPrice * $quantity) - $itemDiscount;
 
                 $saleItems[] = [
                     'variant_id' => $variant->id,
                     'product_name' => $variant->name ?? 'Product',
                     'quantity' => $quantity,
                     'unit_price' => $unitPrice,
-                    'discount_amount' => $discount,
+                    'discount_amount' => $itemDiscount,
                     'subtotal' => $itemSubtotal
                 ];
 
                 $subtotal += $itemSubtotal;
             }
+            $tierDiscount = 0;
+            $tierName = 'Guest';
+            $tierDiscountPercent = 0;
+            $customerId = $data['customer_id'] ?? null;
+            $customer = null;
 
-            $discountAmount = $data['discount_value'] ?? 0;
+            if (!empty($customerId)) {
+                $customerData = $this->customerModel->find($customerId);
+
+                if (!$customerData) {
+                    throw new \Exception("Customer not found");
+                }
+                $customer = (array) $customerData; 
+                // ------------------------------
+
+                // Calculate tier based on current total_spent
+                $tier = $this->customerModel->getTierBySpending((float) $customer['total_spent']); 
+                
+                // Handle jika return object atau array dari method getTierBySpending
+                $tierObj = (object) $tier;
+                $tierName = $tierObj->name;
+                $tierDiscountPercent = (float) $tierObj->discount_percent;
+
+                // Apply tier discount
+                $tierDiscount = $subtotal * ($tierDiscountPercent / 100);
+            }
+            $manualDiscount = (float) ($data['discount_value'] ?? 0);
             if (($data['discount_type'] ?? 'none') === 'percentage') {
-                $discountAmount = $subtotal * ($data['discount_value'] / 100);
+                $manualDiscount = $subtotal * ($manualDiscount / 100);
+            }
+            $pointsRedeemed = 0;
+            $pointsDiscount = 0;
+            $pointValue = 100; // 1 point = Rp 100
+
+            if ($customer && $usePoints) {
+                $availablePoints = (int) $customer['total_points'];
+                
+                $amountAfterDiscounts = $subtotal - $tierDiscount - $manualDiscount;
+                $maxPointsValue = $amountAfterDiscounts;
+                $maxPointsAllowed = (int) floor($maxPointsValue / $pointValue);
+
+                if ($requestedPoints !== null) {
+                    $pointsToRedeem = min($requestedPoints, $availablePoints, $maxPointsAllowed);
+                } else {
+                    $pointsToRedeem = min($availablePoints, $maxPointsAllowed);
+                }
+
+                if ($pointsToRedeem > 0) {
+                    if ($requestedPoints !== null && $requestedPoints > $availablePoints) {
+                        throw new \Exception("Insufficient points. Available: {$availablePoints}");
+                    }
+                    $pointsRedeemed = $pointsToRedeem;
+                    $pointsDiscount = $pointsRedeemed * $pointValue;
+                }
             }
 
-            $taxRate = 0.11;
-            $taxableAmount = $subtotal - $discountAmount;
-            $taxAmount = $taxableAmount * $taxRate;
 
-            $totalAmount = $subtotal - $discountAmount + $taxAmount;
+            $totalDiscount = $tierDiscount + $manualDiscount + $pointsDiscount;
+
+            $taxRate = 0.11;
+            $taxableAmount = $subtotal - $totalDiscount;
+            $taxAmount = $taxableAmount * $taxRate;
+            $totalAmount = $subtotal - $totalDiscount + $taxAmount;
+
+            if ($totalAmount < 0) {
+                throw new \Exception("Invalid discounts: total amount cannot be negative");
+            }
 
             $paidAmount = array_sum(array_column($data['payments'], 'amount'));
             $changeAmount = $paidAmount - $totalAmount;
 
+            // Points Earned Logic
+            $pointsEarned = 0;
+            if ($customer) {
+                $pointsEarned = (int) floor($totalAmount / 10000);
+            }
+
+
             $saleData = [
                 'branch_id' => $branchId,
-                'customer_id' => $data['customer_id'] ?? null,
-                'cashier_id' => $this->currentUser->id,
+                'customer_id' => $customerId,
+                'cashier_id' => $this->currentUser->id ?? null,
                 'invoice_number' => $this->saleModel->generateInvoiceNumber($branchId),
                 'transaction_date' => date('Y-m-d H:i:s'),
                 'subtotal' => $subtotal,
-                'discount_amount' => $discountAmount,
+                'discount_amount' => $totalDiscount,
                 'tax_amount' => $taxAmount,
                 'total_amount' => $totalAmount,
                 'paid_amount' => $paidAmount,
                 'change_amount' => max(0, $changeAmount),
+                'points_earned' => $pointsEarned,
+                'points_redeemed' => $pointsRedeemed,
                 'status' => 'completed',
                 'notes' => $data['notes'] ?? null,
                 'completed_at' => date('Y-m-d H:i:s')
@@ -155,14 +229,15 @@ class SaleController extends BaseApiController
 
             $saleId = $this->saleModel->insert($saleData);
 
+            // Insert Items & Adjust Stock
             foreach ($saleItems as $item) {
                 $item['sale_id'] = $saleId;
                 $item['created_at'] = date('Y-m-d H:i:s');
                 $db->table('sale_items')->insert($item);
-
                 $this->variantModel->adjustStock($item['variant_id'], $item['quantity'], 'out');
             }
 
+            // Insert Payments
             foreach ($data['payments'] as $payment) {
                 $db->table('payments')->insert([
                     'sale_id' => $saleId,
@@ -174,42 +249,50 @@ class SaleController extends BaseApiController
                 ]);
             }
 
-         if (!empty($data['customer_id'])) {
-                $pointsEarned = floor($totalAmount / 10000); 
+            // Update Customer Stats
+            if ($customer) {
+                $currentTotalPoints = (int) $customer['total_points'];
+                $currentTotalSpent = (float) $customer['total_spent'];
+                $currentVisitCount = (int) $customer['visit_count'];
 
-                $customer = $this->customerModel->find($data['customer_id']);
-                
-                if (!empty($data['customer_id'])) {
-                $pointsEarned = floor($totalAmount / 10000); 
+                $newTotalPoints = $currentTotalPoints - $pointsRedeemed + $pointsEarned;
 
-                $customer = $this->customerModel->find($data['customer_id']);
-                
-                if ($customer) {
-                    $custData = (array) $customer;
-                    
-                    $currentPoints = $custData['total_points'] ?? 0;
-                    
-                    $newPoints = $currentPoints + $pointsEarned;
-
-                    $this->customerModel->update($data['customer_id'], [
-                        'total_points' => $newPoints
-                    ]);
-                }
-
-                $this->customerModel->updateAfterPurchase($data['customer_id'], $totalAmount, 0);
+                $this->customerModel->update($customerId, [
+                    'total_spent' => $currentTotalSpent + $totalAmount,
+                    'total_points' => $newTotalPoints,
+                    'visit_count' => $currentVisitCount + 1,
+                    'last_visit_at' => date('Y-m-d H:i:s')
+                ]);
             }
 
-                $this->customerModel->updateAfterPurchase($data['customer_id'], $totalAmount, 0);
-            }
 
             $db->transCommit();
 
-            $sale = $this->saleModel->getSaleWithDetails($saleId);
-            return $this->success($sale, 'Sale completed', 201);
+            // Construct Response Manually
+            $saleResponse = (object) $saleData;
+            $saleResponse->id = $saleId;
+            $saleResponse->items = $saleItems;
+            $saleResponse->payments = $data['payments'];
+            
+            // Append CRM Info
+            $saleResponse->tier_name = $tierName;
+            $saleResponse->tier_discount = $tierDiscount;
+            $saleResponse->tier_discount_percent = $tierDiscountPercent;
+            $saleResponse->manual_discount = $manualDiscount;
+            $saleResponse->points_discount = $pointsDiscount;
+
+            return $this->success($saleResponse, 'Sale completed', 201);
 
         } catch (\Exception $e) {
             $db->transRollback();
-            return $this->error($e->getMessage(), 500);
+            
+            $message = $e->getMessage();
+            $errorCode = 500;
+            if (strpos($message, 'not found') !== false) $errorCode = 404;
+            if (strpos($message, 'Insufficient') !== false) $errorCode = 400;
+            if (strpos($message, 'Invalid') !== false) $errorCode = 400;
+
+            return $this->error($message, $errorCode);
         }
     }
 
@@ -252,7 +335,6 @@ class SaleController extends BaseApiController
         }
 
         $format = $this->request->getGet('format') ?? 'thermal';
-
         $receipt = $this->generateReceipt($sale, $format);
 
         return $this->success([
@@ -265,7 +347,7 @@ class SaleController extends BaseApiController
     {
         $lines = [];
         $lines[] = str_repeat('=', 32);
-        $lines[] = "        CRM+POS STORE";
+        $lines[] = "        KOPI KUY POS";
         $lines[] = str_repeat('=', 32);
         $lines[] = "Invoice: {$sale->invoice_number}";
         $lines[] = "Date: " . date('d/m/Y H:i', strtotime($sale->transaction_date));
@@ -301,6 +383,11 @@ class SaleController extends BaseApiController
         if ($sale->change_amount > 0) {
             $lines[] = sprintf("Change: Rp %s", number_format($sale->change_amount, 0, ',', '.'));
         }
+        
+        if (isset($sale->points_earned) && $sale->points_earned > 0) {
+            $lines[] = str_repeat('-', 32);
+            $lines[] = sprintf("Points Earned: +%d", $sale->points_earned);
+        }
 
         $lines[] = "";
         $lines[] = "    Thank you for shopping!";
@@ -329,7 +416,7 @@ class SaleController extends BaseApiController
             'refund_number' => $refundNumber,
             'total_amount' => $sale->total_amount,
             'reason' => $data['reason'] ?? null,
-            'processed_by' => $this->currentUser->id,
+            'processed_by' => $this->currentUser->id ?? null,
             'status' => 'completed',
             'created_at' => date('Y-m-d H:i:s')
         ]);

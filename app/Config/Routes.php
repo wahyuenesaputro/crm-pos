@@ -50,6 +50,7 @@ $routes->group('api/v1', ['namespace' => 'App\Controllers\Api'], static function
         // Customers
         $routes->get('customers', 'CustomerController::index');
         $routes->get('customers/(:num)', 'CustomerController::show/$1');
+        $routes->get('customers/(:num)/favorites', 'CustomerController::favorites/$1');
         $routes->post('customers', 'CustomerController::create');
         $routes->put('customers/(:num)', 'CustomerController::update/$1');
         $routes->delete('customers/(:num)', 'CustomerController::delete/$1');

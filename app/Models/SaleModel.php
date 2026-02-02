@@ -25,6 +25,7 @@ class SaleModel extends Model
         'paid_amount',
         'change_amount',
         'points_earned',
+        'points_redeemed',
         'status',
         'notes',
         'completed_at'

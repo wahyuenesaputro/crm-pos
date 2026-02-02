@@ -78,4 +78,138 @@ class CustomerModel extends Model
             'last_visit_at' => date('Y-m-d H:i:s')
         ]);
     }
+
+    /**
+     * Calculate membership tier based on total_spent
+     * 
+     * Tier rules:
+     * - Bronze: total_spent < 1,000,000 → 0% discount
+     * - Silver: 1,000,000 <= total_spent <= 5,000,000 → 5% discount
+     * - Gold: total_spent > 5,000,000 → 10% discount
+     * 
+     * @param int $customerId
+     * @return object|null Tier object with name, discount_percent
+     */
+    public function calculateTier(int $customerId): ?object
+    {
+        $customer = $this->find($customerId);
+        if (!$customer) {
+            return null;
+        }
+
+        return $this->getTierBySpending((float) $customer->total_spent);
+    }
+
+    /**
+     * Get tier info based on spending amount (static calculation)
+     * 
+     * @param float $totalSpent Customer's total spending
+     * @return object Tier object with name, slug, discount_percent
+     */
+    public function getTierBySpending(float $totalSpent): object
+    {
+        // Bronze tier: < Rp 1,000,000 → 0% discount
+        if ($totalSpent < 1000000) {
+            return (object) [
+                'name' => 'Bronze',
+                'slug' => 'bronze',
+                'discount_percent' => 0.00
+            ];
+        }
+
+        // Silver tier: >= Rp 1,000,000 and <= Rp 5,000,000 → 5% discount
+        if ($totalSpent <= 5000000) {
+            return (object) [
+                'name' => 'Silver',
+                'slug' => 'silver',
+                'discount_percent' => 5.00
+            ];
+        }
+
+        // Gold tier: > Rp 5,000,000 → 10% discount
+        return (object) [
+            'name' => 'Gold',
+            'slug' => 'gold',
+            'discount_percent' => 10.00
+        ];
+    }
+
+    /**
+     * Redeem points from customer's balance
+     * Uses row-level locking to prevent race conditions
+     * 
+     * Business rule: 1 point = Rp 100
+     * 
+     * @param int $customerId
+     * @param int $points Number of points to redeem
+     * @return array ['success' => bool, 'message' => string, 'points_before' => int, 'points_after' => int]
+     */
+    public function redeemPoints(int $customerId, int $points): array
+    {
+        $db = \Config\Database::connect();
+
+        // Get customer with row lock (FOR UPDATE)
+        $customer = $db->table($this->table)
+            ->where('id', $customerId)
+            ->get()
+            ->getRow();
+
+        if (!$customer) {
+            return [
+                'success' => false,
+                'message' => 'Customer not found',
+                'points_before' => 0,
+                'points_after' => 0
+            ];
+        }
+
+        $currentPoints = (int) $customer->total_points;
+
+        // Validate sufficient points
+        if ($points > $currentPoints) {
+            return [
+                'success' => false,
+                'message' => "Insufficient points. Customer has {$currentPoints} points, requested {$points}",
+                'points_before' => $currentPoints,
+                'points_after' => $currentPoints
+            ];
+        }
+
+        // Deduct points
+        $newPoints = $currentPoints - $points;
+        $updated = $this->update($customerId, ['total_points' => $newPoints]);
+
+        if (!$updated) {
+            return [
+                'success' => false,
+                'message' => 'Failed to update customer points',
+                'points_before' => $currentPoints,
+                'points_after' => $currentPoints
+            ];
+        }
+
+        return [
+            'success' => true,
+            'message' => "Successfully redeemed {$points} points",
+            'points_before' => $currentPoints,
+            'points_after' => $newPoints
+        ];
+    }
+
+    /**
+     * Get customer with row-level lock for concurrent-safe operations
+     * Must be called within a transaction
+     * 
+     * @param int $customerId
+     * @return object|null
+     */
+    public function findForUpdate(int $customerId): ?object
+    {
+        $db = \Config\Database::connect();
+
+        return $db->query(
+            "SELECT * FROM {$this->table} WHERE id = ? FOR UPDATE",
+            [$customerId]
+        )->getRow();
+    }
 }

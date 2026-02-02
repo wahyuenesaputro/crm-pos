@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { X, Printer, Download, CheckCircle, Receipt } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, Printer, Download, CheckCircle, Receipt, Coins } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import api from '../../../lib/api';
 
@@ -11,18 +11,53 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
     const [isProcessing, setIsProcessing] = useState(false);
     const [saleResult, setSaleResult] = useState(null);
 
-    const change = Math.max(0, (parseInt(cashGiven) || 0) - totals.total);
-    const canPay = paymentMethod === 'cash' ? (parseInt(cashGiven) || 0) >= totals.total : true;
+    // --- POINTS REDEMPTION STATE ---
+    const [usePoints, setUsePoints] = useState(false);
+
+    // Reset points toggle when modal opens/closes
+    useEffect(() => {
+        if (open) {
+            setUsePoints(false);
+            setPaymentMethod('cash');
+            setCashGiven('');
+        }
+    }, [open]);
+
+    // --- POINTS LOGIC ---
+    const customer = totals.customer;
+    const availablePoints = customer?.total_points || 0;
+    const pointsValue = availablePoints * 100; // 1 point = Rp 100
+
+    // Calculate final totals
+    const initialTotal = totals.total;
+
+    // Determine max deductible amount (cannot exceed total)
+    let redeemAmount = 0;
+    let redeemedPointsCount = 0;
+
+    if (usePoints && pointsValue > 0) {
+        if (pointsValue >= initialTotal) {
+            redeemAmount = initialTotal;
+            redeemedPointsCount = Math.ceil(initialTotal / 100);
+        } else {
+            redeemAmount = pointsValue;
+            redeemedPointsCount = availablePoints;
+        }
+    }
+
+    const finalTotal = Math.max(0, initialTotal - redeemAmount);
+
+    const change = Math.max(0, (parseInt(cashGiven) || 0) - finalTotal);
+    const canPay = paymentMethod === 'cash' ? (parseInt(cashGiven) || 0) >= finalTotal : true;
 
     const quickAmounts = [
-        totals.total,
-        Math.ceil(totals.total / 10000) * 10000,
-        Math.ceil(totals.total / 50000) * 50000,
-        Math.ceil(totals.total / 100000) * 100000,
-    ].filter((v, i, a) => a.indexOf(v) === i && v >= totals.total);
+        finalTotal,
+        Math.ceil(finalTotal / 10000) * 10000,
+        Math.ceil(finalTotal / 50000) * 50000,
+        Math.ceil(finalTotal / 100000) * 100000,
+    ].filter((v, i, a) => a.indexOf(v) === i && v >= finalTotal);
 
     const processPayment = async () => {
-        console.log("Isi Cart:", cart);
         if (!canPay) return;
         setIsProcessing(true);
 
@@ -31,35 +66,44 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
 
             const payload = {
                 branch_id: user.branch_id || 1,
-                
+
                 customer_id: totals.customer ? totals.customer.id : null,
-                
+
+                // Note: Tier discounts are calculated on backend, but we pass these for completeness
                 discount_value: totals.discount || 0,
                 tax_amount: totals.tax || 0,
-                notes: '', 
+                notes: '',
 
                 items: cart.map(item => ({
-                    variant_id: item.variant_id,
+                    variant_id: item.variant_id || item.id, // Fallback to id if variant_id missing
                     quantity: item.quantity,
                     discount: 0
                 })),
+
+                // --- NEW: POINTS REDEMPTION ---
+                use_points: usePoints,
+                points_amount: usePoints ? redeemedPointsCount : 0,
+
                 payments: [
                     {
                         method: paymentMethod,
-                        amount: paymentMethod === 'cash' ? parseInt(cashGiven) : totals.total,
+                        amount: paymentMethod === 'cash' ? parseInt(cashGiven) : finalTotal,
                         reference: paymentMethod !== 'cash' ? 'REF-' + Date.now() : null
                     }
                 ]
             };
 
             const { data } = await api.post('/sales', payload);
-            
+
             setSaleResult({
                 ...data.data,
                 cart: cart,
                 paymentMethod: paymentMethod,
-                cashGiven: parseInt(cashGiven) || totals.total,
-                change: change
+                cashGiven: parseInt(cashGiven) || finalTotal,
+                change: change,
+                // Add points info for receipt
+                pointsRedeemed: data.data.points_redeemed || 0,
+                pointsDiscount: data.data.points_discount || 0
             });
             if (onSuccess) onSuccess();
         } catch (error) {
@@ -73,7 +117,8 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
     const handlePrint = () => {
         const printWindow = window.open('', '_blank', 'width=400,height=600');
         const customerName = saleResult?.customer?.name || totals.customer?.name || 'Guest';
-        
+
+        // Receipt formatting logic...
         printWindow.document.write(`
             <html>
             <head>
@@ -108,7 +153,12 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
                 </div>
                 <div class="line"></div>
                 <div class="row"><span>Subtotal:</span><span>Rp ${parseInt(saleResult?.subtotal || 0).toLocaleString('id-ID')}</span></div>
-                <div class="row"><span>Tax (11%):</span><span>Rp ${parseInt(saleResult?.tax_amount || 0).toLocaleString('id-ID')}</span></div>
+                
+                ${saleResult?.tier_discount > 0 ? `<div class="row"><span>${saleResult.tier_name} Disc:</span><span>-Rp ${parseInt(saleResult.tier_discount).toLocaleString('id-ID')}</span></div>` : ''}
+                
+                ${saleResult?.points_discount > 0 ? `<div class="row"><span>Points (${saleResult.points_redeemed}):</span><span>-Rp ${parseInt(saleResult.points_discount).toLocaleString('id-ID')}</span></div>` : ''}
+
+                <div class="row"><span>Tax:</span><span>Rp ${parseInt(saleResult?.tax_amount || 0).toLocaleString('id-ID')}</span></div>
                 <div class="line"></div>
                 <div class="row total-row"><span>TOTAL:</span><span>Rp ${parseInt(saleResult?.total_amount || 0).toLocaleString('id-ID')}</span></div>
                 <div class="line"></div>
@@ -116,6 +166,7 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
                 <div class="row"><span>Change:</span><span>Rp ${parseInt(saleResult?.change_amount || 0).toLocaleString('id-ID')}</span></div>
                 <div class="line"></div>
                 ${totals.customer ? `<div class="center" style="margin-top: 8px;">Points Earned: +${Math.floor(saleResult?.total_amount / 10000)}</div>` : ''}
+                ${saleResult?.points_redeemed > 0 ? `<div class="center">Points Used: -${saleResult.points_redeemed}</div>` : ''}
                 <div class="center" style="margin-top: 16px;">Thank you for your purchase!</div>
                 <div class="center" style="font-size: 10px; margin-top: 8px;">www.kopikuy.com</div>
             </body>
@@ -151,8 +202,7 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
                                 <span className="text-gray-500 text-sm">Invoice Number</span>
                                 <span className="font-mono font-bold text-gray-900">{saleResult.invoice_number}</span>
                             </div>
-                            
-                            {/* TAMPILKAN CUSTOMER DI RECEIPT LAYAR */}
+
                             {totals.customer && (
                                 <div className="flex justify-between items-center mb-3 border-b border-gray-200 pb-2">
                                     <span className="text-gray-500 text-sm">Customer</span>
@@ -171,6 +221,25 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
                                     <div className="text-sm text-gray-400">...and {saleResult.cart.length - 3} more items</div>
                                 )}
                             </div>
+
+                            {/* Points Discount in Receipt Preview */}
+                            {(saleResult.points_discount > 0 || saleResult.tier_discount > 0) && (
+                                <div className="border-t border-gray-200 mt-3 pt-2 text-xs text-green-600 space-y-1">
+                                    {saleResult.tier_discount > 0 && (
+                                        <div className="flex justify-between">
+                                            <span>Member Discount</span>
+                                            <span>-Rp {parseInt(saleResult.tier_discount).toLocaleString('id-ID')}</span>
+                                        </div>
+                                    )}
+                                    {saleResult.points_discount > 0 && (
+                                        <div className="flex justify-between font-medium">
+                                            <span>Points Redeemed ({saleResult.points_redeemed})</span>
+                                            <span>-Rp {parseInt(saleResult.points_discount).toLocaleString('id-ID')}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
                             <div className="border-t border-gray-200 mt-3 pt-3">
                                 <div className="flex justify-between font-bold text-lg">
                                     <span>Total</span>
@@ -233,15 +302,68 @@ export default function PaymentModal({ open, onClose, totals, cart, onSuccess })
                     <div className="text-center mb-6">
                         <span className="text-gray-500 text-sm">Total Amount Due</span>
                         <div className="text-4xl font-bold text-primary mt-1">
-                            Rp {totals.total.toLocaleString('id-ID')}
+                            Rp {finalTotal.toLocaleString('id-ID')}
                         </div>
+                        {redeemAmount > 0 && (
+                            <p className="text-xs text-black/40 line-through mt-1">
+                                Rp {initialTotal.toLocaleString('id-ID')}
+                            </p>
+                        )}
                     </div>
 
-                    {/* Menampilkan Customer yang dipilih (untuk verifikasi) */}
-                    {totals.customer && (
-                        <div className="mb-6 bg-blue-50 p-3 rounded-lg border border-blue-100 flex justify-between items-center">
-                            <span className="text-sm text-blue-700">Customer: <b>{totals.customer.name}</b></span>
-                            <span className="text-xs bg-blue-200 text-blue-800 px-2 py-1 rounded-full">Loyalty Member</span>
+                    {/* Customer Info & Points Redemption */}
+                    {customer && (
+                        <div className="mb-6 space-y-3">
+                            <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 flex justify-between items-center">
+                                <span className="text-sm text-blue-700">Customer: <b>{customer.name}</b></span>
+                                <span className="text-xs bg-blue-200 text-blue-800 px-2 py-1 rounded-full">
+                                    {customer.total_points || 0} pts
+                                </span>
+                            </div>
+
+                            {/* Points Toggle */}
+                            {availablePoints > 0 && (
+                                <div className="bg-white border border-gray-200 rounded-lg p-3 flex justify-between items-center shadow-sm">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 rounded-full bg-yellow-100 flex items-center justify-center">
+                                            <Coins className="w-4 h-4 text-yellow-600" />
+                                        </div>
+                                        <div>
+                                            <p className="text-sm font-bold text-gray-800">Redeem Points</p>
+                                            <p className="text-xs text-gray-500">
+                                                Available: {availablePoints} (Worth Rp {pointsValue.toLocaleString('id-ID')})
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={usePoints}
+                                            onChange={(e) => setUsePoints(e.target.checked)}
+                                        />
+                                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                    </label>
+                                </div>
+                            )}
+
+                            {/* Transparent Math Breakdown */}
+                            {usePoints && redeemAmount > 0 && (
+                                <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-1 border border-dashed border-gray-300">
+                                    <div className="flex justify-between text-gray-500">
+                                        <span>Subtotal</span>
+                                        <span>Rp {initialTotal.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-green-600 font-medium">
+                                        <span>Points Used ({redeemedPointsCount})</span>
+                                        <span>- Rp {redeemAmount.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between border-t border-gray-200 pt-1 font-bold text-gray-800">
+                                        <span>Final Payment</span>
+                                        <span>Rp {finalTotal.toLocaleString('id-ID')}</span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
 

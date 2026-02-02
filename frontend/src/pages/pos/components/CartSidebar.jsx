@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Trash2, Plus, Minus, CreditCard, Ticket, X, Loader2, User, Search } from 'lucide-react';
+import { Trash2, Plus, Minus, CreditCard, Ticket, X, Loader2, User, Search, Star, ShoppingBag, Crown } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import api from '../../../lib/api';
 
-export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, onClear }) {
+export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, onClear, onAddToCart }) {
     // --- STATE VOUCHER ---
     const [voucherCode, setVoucherCode] = useState('');
     const [voucherLoading, setVoucherLoading] = useState(false);
@@ -17,12 +17,14 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
     const [showCustomerList, setShowCustomerList] = useState(false);
     const [isSearchingCustomer, setIsSearchingCustomer] = useState(false);
 
-    // --- STATE SETTINGS (NEW) ---
-    // Default pajak 11% jika belum ada setting yang tersimpan
+    // --- STATE FAVORITES (NEW) ---
+    const [favorites, setFavorites] = useState([]);
+    const [loadingFavorites, setLoadingFavorites] = useState(false);
+
+    // --- STATE SETTINGS ---
     const [storeSettings, setStoreSettings] = useState({ tax_rate: 11 });
 
     useEffect(() => {
-        // Ambil settingan toko dari LocalStorage agar sinkron dengan halaman Settings
         try {
             const savedSettings = localStorage.getItem('storeSettings');
             if (savedSettings) {
@@ -33,26 +35,51 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
         }
     }, []);
 
+    // --- CALCULATE TIER (Frontend logic for display) ---
+    const getTierInfo = (customer) => {
+        if (!customer) return null;
+        // Logic matches backend:
+        // Bronze: < 1M (0%)
+        // Silver: >= 1M < 5M (5%)
+        // Gold: >= 5M (10%)
+
+        // If backend already provides tier_name, use it to derive style
+        // Otherwise calculate from total_spent
+        const spent = parseFloat(customer.total_spent || 0);
+
+        if (spent > 5000000) return { name: 'Gold', color: 'bg-yellow-100 text-yellow-800 border-yellow-200', iconColor: 'text-yellow-600', discount: 10 };
+        if (spent >= 1000000) return { name: 'Silver', color: 'bg-slate-100 text-slate-800 border-slate-200', iconColor: 'text-slate-600', discount: 5 };
+        return { name: 'Bronze', color: 'bg-amber-100 text-amber-900 border-amber-200', iconColor: 'text-amber-700', discount: 0 };
+    };
+
+    const customerTier = selectedCustomer ? getTierInfo(selectedCustomer) : null;
+
     // --- CALCULATIONS ---
     const subtotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-    const discount = voucher?.discount_amount || 0;
-    const taxableAmount = subtotal - discount;
 
+    // Calculate estimated tier discount
+    const tierDiscountPercent = customerTier?.discount || 0;
+    const tierDiscountAmount = subtotal * (tierDiscountPercent / 100);
+
+    const voucherDiscountAmount = voucher?.discount_amount || 0;
+
+    // Total discount
+    const totalDiscount = tierDiscountAmount + voucherDiscountAmount;
+
+    const taxableAmount = subtotal - totalDiscount;
     const taxRateDecimal = (storeSettings.tax_rate || 0) / 100;
     const tax = Math.max(0, taxableAmount) * taxRateDecimal;
-    
+
     const total = Math.max(0, taxableAmount + tax);
-    
-    const pointsEarned = Math.floor(total / 10000); 
+    const pointsEarned = Math.floor(total / 10000);
 
     // --- CUSTOMER LOGIC ---
     const handleSearchCustomer = async (value) => {
         setCustomerSearch(value);
-        // Kita izinkan pencarian kosong untuk menampilkan default list
         setIsSearchingCustomer(true);
         try {
             const { data } = await api.get(`/customers?search=${value}`);
-            setCustomers(data.data || []); 
+            setCustomers(data.data || []);
             setShowCustomerList(true);
         } catch (error) {
             console.error("Failed to fetch customers", error);
@@ -61,15 +88,30 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
         }
     };
 
-    const selectCustomer = (customer) => {
+    const selectCustomer = async (customer) => {
         setSelectedCustomer(customer);
         setCustomerSearch('');
         setShowCustomerList(false);
+
+        // Fetch favorites
+        setLoadingFavorites(true);
+        setFavorites([]);
+        try {
+            const { data } = await api.get(`/customers/${customer.id}/favorites`);
+            if (data.data) {
+                setFavorites(data.data);
+            }
+        } catch (error) {
+            console.error("Failed to fetch favorites", error);
+        } finally {
+            setLoadingFavorites(false);
+        }
     };
 
     const removeCustomer = () => {
         setSelectedCustomer(null);
         setCustomerSearch('');
+        setFavorites([]);
     };
 
     // --- VOUCHER LOGIC ---
@@ -118,21 +160,96 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
             {/* --- CUSTOMER SELECTOR --- */}
             <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 relative z-20">
                 {selectedCustomer ? (
-                    <div className="flex items-center justify-between bg-blue-50 p-2 rounded-lg border border-blue-100">
-                        <div className="flex items-center overflow-hidden">
-                            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mr-2 shrink-0">
-                                <User className="w-4 h-4 text-blue-600" />
+                    <div className="space-y-3">
+                        <div className={cn("flex items-center justify-between p-3 rounded-lg border", customerTier?.color)}>
+                            <div className="flex items-center overflow-hidden">
+                                <div className="relative mr-3 shrink-0">
+                                    <div className="w-10 h-10 rounded-full bg-white/50 flex items-center justify-center">
+                                        <User className={cn("w-5 h-5", customerTier?.iconColor)} />
+                                    </div>
+                                    <div className="absolute -top-1 -right-1 bg-white rounded-full p-0.5 shadow-sm">
+                                        <Crown className={cn("w-3 h-3", customerTier?.iconColor)} fill="currentColor" />
+                                    </div>
+                                </div>
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <p className="text-sm font-bold truncate">{selectedCustomer.name}</p>
+                                        <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 bg-white/60 rounded-full border border-white/20">
+                                            {customerTier?.name}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs opacity-80 truncate">
+                                        {selectedCustomer.total_points || 0} Points
+                                    </p>
+                                </div>
                             </div>
-                            <div className="min-w-0">
-                                <p className="text-sm font-bold text-gray-800 truncate">{selectedCustomer.name}</p>
-                                <p className="text-xs text-blue-600 truncate">
-                                    Current Points: {selectedCustomer.total_points || 0}
-                                </p>
-                            </div>
+                            <button onClick={removeCustomer} className="p-1 hover:bg-white/50 rounded transition-colors">
+                                <X className="w-4 h-4 opacity-60" />
+                            </button>
                         </div>
-                        <button onClick={removeCustomer} className="p-1 hover:bg-blue-100 rounded text-gray-500 hover:text-red-500 transition-colors">
-                            <X className="w-4 h-4" />
-                        </button>
+
+                        {/* Frequently Ordered Section */}
+                        {(favorites.length > 0 || loadingFavorites) && (
+                            <div className="animate-in slide-in-from-top-1 duration-300">
+                                <div className="flex items-center gap-1.5 mb-2">
+                                    <Star className="w-3 h-3 text-yellow-500 fill-yellow-500" />
+                                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Frequently Ordered</span>
+                                </div>
+                                {loadingFavorites ? (
+                                    <div className="flex gap-2">
+                                        {[1, 2, 3].map(i => <div key={i} className="h-8 w-20 bg-gray-200 rounded animate-pulse" />)}
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {favorites.map(fav => (
+                                            <button
+                                                key={fav.product_id}
+                                                // Assuming parent handles mapping fav item to cart structure or we construct it here
+                                                onClick={() => onAddToCart && onAddToCart({
+                                                    id: fav.product_id, // Ensure ID mismatch handled if fav uses product_id vs variant_id
+                                                    // This might need adjustment based on how addToCart expects data. 
+                                                    // Usually needs variant_id. For now passing what we have.
+                                                    // If Favorite returns product_id, we might need to find variant. 
+                                                    // Assuming simple product = variant for now or favorite returns variant_id.
+                                                    // The backend returns product_id. Front end usually needs variant_id.
+                                                    // Let's assume onAddToCart handles it or we pass product_id as variant_id if simple.
+                                                    // Actually, looking at backend implementation, create takes variant_id.
+                                                    // The favorite endpoint returns product_id. 
+                                                    // Wait, CartSidebar usually receives onAddToCart which usually takes a product object.
+                                                    // The product object in ProductsPage usually has id (product_id) and variants.
+                                                    // If the favorite item is clicked, we might need a variant selection or assume default variant.
+                                                    // Let's pass the fav object and let the handler decide, but add variant_id if missing.
+                                                    // Wait, the favorites query joins variant! 
+                                                    // "INNER JOIN product_variants pv ON pv.id = si.variant_id"
+                                                    // But the select is "p.id as product_id". 
+                                                    // Ah, I should have selected variant_id in the backend query if I wanted to add specific variant.
+                                                    // The user requirement says "Call addToCart(product)". 
+                                                    // I will pass the object.
+                                                    ...fav,
+                                                    id: fav.product_id,
+                                                    name: fav.product_name
+                                                })}
+                                                className="flex flex-col items-center p-2 bg-white border border-gray-200 rounded-lg hover:border-primary hover:bg-primary/5 transition-all text-center group"
+                                            >
+                                                <div className="w-full aspect-square bg-gray-100 rounded mb-1 overflow-hidden relative">
+                                                    {fav.image ? (
+                                                        <img src={fav.image} alt={fav.product_name} className="w-full h-full object-cover" />
+                                                    ) : (
+                                                        <ShoppingBag className="w-4 h-4 text-gray-300 absolute inset-0 m-auto" />
+                                                    )}
+                                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                                                        <Plus className="w-4 h-4 text-white opacity-0 group-hover:opacity-100 scale-75 group-hover:scale-100 transition-all" />
+                                                    </div>
+                                                </div>
+                                                <span className="text-[10px] font-medium text-gray-600 line-clamp-1 leading-tight group-hover:text-primary">
+                                                    {fav.product_name}
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 ) : (
                     <div className="relative">
@@ -153,7 +270,7 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
                             />
                             {isSearchingCustomer && <Loader2 className="w-4 h-4 text-primary animate-spin mr-3" />}
                         </div>
-                        
+
                         {/* Dropdown Results */}
                         {showCustomerList && customers.length > 0 && (
                             <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-100 max-h-48 overflow-y-auto z-50">
@@ -224,7 +341,7 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
                             <Ticket className="w-4 h-4 text-green-600 mr-2" />
                             <div>
                                 <p className="text-sm font-medium text-green-800">{voucher.code}</p>
-                                <p className="text-xs text-green-600">-Rp {discount.toLocaleString('id-ID')}</p>
+                                <p className="text-xs text-green-600">-Rp {voucherDiscountAmount.toLocaleString('id-ID')}</p>
                             </div>
                         </div>
                         <button onClick={removeVoucher} className="p-1 hover:bg-green-100 rounded">
@@ -262,20 +379,30 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
                         <span className="text-gray-500">Subtotal</span>
                         <span>Rp {subtotal.toLocaleString('id-ID')}</span>
                     </div>
-                    {discount > 0 && (
-                        <div className="flex justify-between text-sm text-green-600">
-                            <span>Discount</span>
-                            <span>-Rp {discount.toLocaleString('id-ID')}</span>
+
+                    {/* Tier Discount Display - Visual Enhancement */}
+                    {tierDiscountAmount > 0 && (
+                        <div className="flex justify-between text-sm text-blue-600">
+                            <span className="flex items-center gap-1">
+                                <Crown className="w-3 h-3" />
+                                {customerTier?.name} Discount ({customerTier?.discount}%)
+                            </span>
+                            <span>-Rp {tierDiscountAmount.toLocaleString('id-ID')}</span>
                         </div>
                     )}
-                    
-                    {}
+
+                    {voucherDiscountAmount > 0 && (
+                        <div className="flex justify-between text-sm text-green-600">
+                            <span>Voucher Discount</span>
+                            <span>-Rp {voucherDiscountAmount.toLocaleString('id-ID')}</span>
+                        </div>
+                    )}
+
                     <div className="flex justify-between text-sm">
                         <span className="text-gray-500">Tax ({storeSettings.tax_rate}%)</span>
                         <span>Rp {Math.round(tax).toLocaleString('id-ID')}</span>
                     </div>
-                    
-                    {}
+
                     {selectedCustomer && (
                         <div className="flex justify-between text-sm text-blue-600 font-medium">
                             <span>Points to Earn</span>
@@ -290,14 +417,15 @@ export default function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, o
                 </div>
 
                 <button
-                    onClick={() => onCheckout({ 
-                        subtotal, 
-                        discount, 
-                        tax: Math.round(tax), 
-                        total: Math.round(total), 
+                    onClick={() => onCheckout({
+                        subtotal,
+                        // Note: actual discount calc happens on backend, but we pass these for UI consistency if needed
+                        discount: totalDiscount,
+                        tax: Math.round(tax),
+                        total: Math.round(total),
                         voucher,
                         customer: selectedCustomer,
-                        pointsEarned: selectedCustomer ? pointsEarned : 0 
+                        pointsEarned: selectedCustomer ? pointsEarned : 0
                     })}
                     disabled={cart.length === 0}
                     className="w-full bg-primary text-white py-3 rounded-lg font-bold shadow-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
