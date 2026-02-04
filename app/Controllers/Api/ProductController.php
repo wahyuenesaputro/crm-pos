@@ -102,21 +102,16 @@ class ProductController extends BaseApiController
      */
     public function update($id = null)
     {
-        // 1. Cek Produk
         $product = $this->productModel->where('tenant_id', $this->tenantId)->find($id);
         if (!$product) {
             return $this->error('Product not found', 404);
         }
 
         $data = $this->request->getJSON(true) ?? $this->request->getPost();
-        unset($data['tenant_id']); // Prevent tenant change
-
-        // 2. Update Tabel Utama (Products)
+        unset($data['tenant_id']); 
         if (isset($data['name'])) {
             $data['slug'] = url_title($data['name'], '-', true);
         }
-
-        // Handle image upload
         $image = $this->request->getFile('image');
         if ($image && $image->isValid() && !$image->hasMoved()) {
             if ($product->image && file_exists(WRITEPATH . ltrim($product->image, '/'))) {
@@ -127,11 +122,7 @@ class ProductController extends BaseApiController
             $data['image'] = '/uploads/products/' . $imageName;
         }
 
-        // Update data dasar (Nama, Kategori, Deskripsi, dll)
         $this->productModel->update($id, $data);
-
-        // 3. Update Tabel Variant (Harga, Stok, SKU) -- BAGIAN INI YANG HILANG SEBELUMNYA
-        // Kita filter data apa saja yang milik variant
         $variantData = [];
         $variantFields = ['selling_price', 'cost_price', 'stock_qty', 'min_stock', 'sku', 'barcode', 'is_active'];
         
@@ -181,18 +172,15 @@ class ProductController extends BaseApiController
             return $this->error('Valid image file is required', 422);
         }
 
-        // Validate image type
         $validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
         if (!in_array($image->getMimeType(), $validTypes)) {
             return $this->error('Invalid image type. Allowed: JPG, PNG, GIF, WEBP', 422);
         }
 
-        // Max 5MB
         if ($image->getSizeByUnit('mb') > 5) {
             return $this->error('Image must be less than 5MB', 422);
         }
 
-        // Delete old image if exists
         if ($product->image && file_exists(WRITEPATH . ltrim($product->image, '/'))) {
             @unlink(WRITEPATH . ltrim($product->image, '/'));
         }

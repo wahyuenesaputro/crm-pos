@@ -156,7 +156,7 @@ class ReportController extends BaseApiController
         ]);
     }
     
-    /**
+    /*
      * GET /api/v1/reports/customer-rfm
      */
     public function customerRfm()
