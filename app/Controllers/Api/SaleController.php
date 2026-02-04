@@ -67,53 +67,28 @@ class SaleController extends BaseApiController
     /**
      * POST /api/v1/sales
      */
-    public function create()
+public function create()
     {
         $data = $this->request->getJSON(true);
 
-        // 1. Validasi Input
-        if (empty($data['items']) || !is_array($data['items'])) {
-            return $this->error('Items are required', 422);
-        }
-        if (empty($data['payments']) || !is_array($data['payments'])) {
-            return $this->error('Payments are required', 422);
-        }
+        if (empty($data['items']) || !is_array($data['items'])) return $this->error('Items are required', 422);
+        if (empty($data['payments']) || !is_array($data['payments'])) return $this->error('Payments are required', 422);
 
-        $branchId = $this->branchId;
-        if (empty($branchId)) {
-            $branchId = $data['branch_id'] ?? null;
-        }
-        if (empty($branchId)) {
-            return $this->error('Branch context is required.', 422);
-        }
-
-        // Validate points
-        $usePoints = !empty($data['use_points']);
-        $requestedPoints = isset($data['points_amount']) ? (int) $data['points_amount'] : null;
-
-        if ($requestedPoints !== null && $requestedPoints < 0) {
-            return $this->error('points_amount must be a non-negative integer', 422);
-        }
+        $branchId = $this->branchId ?? ($data['branch_id'] ?? null);
+        if (empty($branchId)) return $this->error('Branch context is required.', 422);
 
         $db = \Config\Database::connect();
         $db->transBegin();
 
         try {
-            // 2. Hitung Subtotal Item
             $subtotal = 0;
             $saleItems = [];
 
             foreach ($data['items'] as $item) {
                 $idOrSku = $item['variant_id'];
                 $variant = $this->variantModel->find($idOrSku);
-
-                if (!$variant) {
-                    $variant = $this->variantModel->where('sku', $idOrSku)->first();
-                }
-
-                if (!$variant) {
-                    throw new \Exception("Product variant {$idOrSku} not found");
-                }
+                if (!$variant) $variant = $this->variantModel->where('sku', $idOrSku)->first();
+                if (!$variant) throw new \Exception("Product variant {$idOrSku} not found");
 
                 $quantity = (int) $item['quantity'];
                 $unitPrice = (float) $variant->selling_price;
@@ -128,11 +103,9 @@ class SaleController extends BaseApiController
                     'discount_amount' => $itemDiscount,
                     'subtotal' => $itemSubtotal
                 ];
-
                 $subtotal += $itemSubtotal;
             }
 
-            // 3. Hitung Tier Discount (Member)
             $tierDiscount = 0;
             $tierName = 'Guest';
             $tierDiscountPercent = 0;
@@ -141,82 +114,60 @@ class SaleController extends BaseApiController
 
             if (!empty($customerId)) {
                 $customerData = $this->customerModel->find($customerId);
-
-                if (!$customerData) {
-                    throw new \Exception("Customer not found");
-                }
+                if (!$customerData) throw new \Exception("Customer not found");
+                
                 $customer = (array) $customerData; 
-
-                // Calculate tier based on current total_spent
                 $tier = $this->customerModel->getTierBySpending((float) $customer['total_spent']); 
                 
                 $tierObj = (object) $tier;
                 $tierName = $tierObj->name;
                 $tierDiscountPercent = (float) $tierObj->discount_percent;
 
-                // Apply tier discount
                 $tierDiscount = $subtotal * ($tierDiscountPercent / 100);
             }
 
-            // 4. Hitung Voucher Discount
-            $voucherCode = $data['voucher_code'] ?? null; // Ambil kode voucher dari frontend
-            $voucherDiscount = (float) ($data['discount_value'] ?? 0);
-            
-            // Jika frontend mengirim tipe persen untuk voucher
+            $voucherCode = $data['voucher_code'] ?? null;
+            $voucherDiscount = (float) ($data['discount_value'] ?? 0);         
             if (($data['discount_type'] ?? 'none') === 'percentage') {
                 $voucherDiscount = $subtotal * ($voucherDiscount / 100);
             }
 
-            // 5. Hitung Points Redemption
             $pointsRedeemed = 0;
             $pointsDiscount = 0;
-            $pointValue = 100; // 1 point = Rp 100
+            $usePoints = !empty($data['use_points']);
+            $pointValue = 100; 
 
             if ($customer && $usePoints) {
                 $availablePoints = (int) $customer['total_points'];
-                
-                // Poin memotong harga SETELAH diskon member & voucher
                 $amountAfterDiscounts = $subtotal - $tierDiscount - $voucherDiscount;
-                $maxPointsValue = max(0, $amountAfterDiscounts);
-                $maxPointsAllowed = (int) floor($maxPointsValue / $pointValue);
-
-                if ($requestedPoints !== null) {
-                    $pointsToRedeem = min($requestedPoints, $availablePoints, $maxPointsAllowed);
-                } else {
-                    $pointsToRedeem = min($availablePoints, $maxPointsAllowed);
-                }
+                
+                $maxPointsAllowed = (int) floor(max(0, $amountAfterDiscounts) / $pointValue);
+                
+                $requestedPoints = isset($data['points_amount']) ? (int) $data['points_amount'] : null;
+                $pointsToRedeem = ($requestedPoints !== null) 
+                    ? min($requestedPoints, $availablePoints, $maxPointsAllowed)
+                    : min($availablePoints, $maxPointsAllowed);
 
                 if ($pointsToRedeem > 0) {
-                    if ($requestedPoints !== null && $requestedPoints > $availablePoints) {
-                        throw new \Exception("Insufficient points. Available: {$availablePoints}");
-                    }
                     $pointsRedeemed = $pointsToRedeem;
                     $pointsDiscount = $pointsRedeemed * $pointValue;
                 }
             }
 
-            // 6. Total Akhir
             $totalDiscount = $tierDiscount + $voucherDiscount + $pointsDiscount;
-
             $taxRate = 0.11;
             $taxableAmount = max(0, $subtotal - $totalDiscount);
             $taxAmount = $taxableAmount * $taxRate;
             $totalAmount = $taxableAmount + $taxAmount;
 
-            if ($totalAmount < 0) {
-                throw new \Exception("Invalid discounts: total amount cannot be negative");
-            }
-
             $paidAmount = array_sum(array_column($data['payments'], 'amount'));
             $changeAmount = $paidAmount - $totalAmount;
-
-            // Points Earned Logic
+            
             $pointsEarned = 0;
             if ($customer) {
                 $pointsEarned = (int) floor($totalAmount / 10000);
             }
 
-            // 7. Simpan Data ke Database
             $saleData = [
                 'branch_id' => $branchId,
                 'customer_id' => $customerId,
@@ -226,34 +177,44 @@ class SaleController extends BaseApiController
                 'subtotal' => $subtotal,
                 'discount_amount' => $totalDiscount,
                 
-                // --- DATA BARU UNTUK STRUK ---
                 'voucher_code' => $voucherCode,
                 'voucher_amount' => $voucherDiscount,
                 'tier_discount_amount' => $tierDiscount,
-                // -----------------------------
-
+                
                 'tax_amount' => $taxAmount,
                 'total_amount' => $totalAmount,
                 'paid_amount' => $paidAmount,
                 'change_amount' => max(0, $changeAmount),
                 'points_earned' => $pointsEarned,
-                'points_redeemed' => $pointsRedeemed,
+                'points_redeemed' => $pointsRedeemed, 
+                
                 'status' => 'completed',
                 'notes' => $data['notes'] ?? null,
                 'completed_at' => date('Y-m-d H:i:s')
             ];
 
-            $saleId = $this->saleModel->insert($saleData);
+            if (!$this->saleModel->insert($saleData)) {
+                $errors = $this->saleModel->errors();
+                throw new \Exception('Gagal Simpan Sale Header: ' . implode(', ', $errors));
+            }
+            $saleId = $this->saleModel->getInsertID();
 
-            // Insert Items & Adjust Stock
-            foreach ($saleItems as $item) {
+            foreach ($saleItems as $index => $item) {
                 $item['sale_id'] = $saleId;
                 $item['created_at'] = date('Y-m-d H:i:s');
-                $db->table('sale_items')->insert($item);
-                $this->variantModel->adjustStock($item['variant_id'], $item['quantity'], 'out');
+                
+                if (!$db->table('sale_items')->insert($item)) {
+                    $dbErr = $db->error();
+                    throw new \Exception("Gagal Simpan Item #{$index}: " . $dbErr['message']);
+                }
+
+                try {
+                    $this->variantModel->adjustStock($item['variant_id'], $item['quantity'], 'out');
+                } catch (\Exception $stockEx) {
+                    throw new \Exception("Gagal Update Stok Item #{$index}: " . $stockEx->getMessage());
+                }
             }
 
-            // Insert Payments
             foreach ($data['payments'] as $payment) {
                 $db->table('payments')->insert([
                     'sale_id' => $saleId,
@@ -265,7 +226,6 @@ class SaleController extends BaseApiController
                 ]);
             }
 
-            // Update Customer Stats
             if ($customer) {
                 $currentTotalPoints = (int) $customer['total_points'];
                 $currentTotalSpent = (float) $customer['total_spent'];
@@ -283,31 +243,17 @@ class SaleController extends BaseApiController
 
             $db->transCommit();
 
-            // Construct Response Manually
             $saleResponse = (object) $saleData;
             $saleResponse->id = $saleId;
             $saleResponse->items = $saleItems;
             $saleResponse->payments = $data['payments'];
-            
-            // Append CRM Info for Response
             $saleResponse->tier_name = $tierName;
-            $saleResponse->tier_discount = $tierDiscount;
-            $saleResponse->tier_discount_percent = $tierDiscountPercent;
-            $saleResponse->manual_discount = $voucherDiscount;
-            $saleResponse->points_discount = $pointsDiscount;
-
+            
             return $this->success($saleResponse, 'Sale completed', 201);
 
         } catch (\Exception $e) {
             $db->transRollback();
-            
-            $message = $e->getMessage();
-            $errorCode = 500;
-            if (strpos($message, 'not found') !== false) $errorCode = 404;
-            if (strpos($message, 'Insufficient') !== false) $errorCode = 400;
-            if (strpos($message, 'Invalid') !== false) $errorCode = 400;
-
-            return $this->error($message, $errorCode);
+            return $this->error($e->getMessage(), 500);
         }
     }
 
